@@ -37,9 +37,10 @@ motivated separating them:
   `bash` invocation: the client's decision wait timed out; the negotiated
   failure posture resolved to PROCEED; the command executed; and the
   Guardian later emitted DENY for the very same request, which did not
-  change the outcome. Full report:
-  `/tmp/acs-phase4fv2-20260916/REPORT.md` (outside this repository's tracked
-  tree). Classification there: `EFFECTIVE DECISION VALIDATED: PROCEED`.
+  change the outcome. That report and its capture were
+  not retained. The case was re-run on 2026-11-01 with a published capture:
+  https://gist.github.com/AngeYobo/fe5cd44a864b4d54809cf1ded1e6d956
+  (see "Runtime re-run" below). Classification there: `EFFECTIVE DECISION VALIDATED: PROCEED`.
 
 Formal-2 refines the model so it can represent this distinction structurally,
 rather than only describe it in prose. The refinement is motivated by these
@@ -442,6 +443,19 @@ milliseconds, HTTP, JSON-RPC, processes, or the specific `bash` tool.
 | Guardian's delayed response, `decision=deny`, same `rpc_id`, sent after settlement | `ReceiveGuardianDeny` with `PermitLateDecisionReplacement = FALSE` (the safe configuration) |
 | DENY did not become effective for the already-settled invocation | `effectiveDecision` remains `"PROCEED"`; `guardianDecision = "DENY"` is recorded separately |
 
+### Runtime re-run (2026-11-01)
+
+Same case, re-captured: OpenCode 1.18.30, Bun 1.3.11, an unmodified Guardian
+from the fixture at `ea1e345` (run in `ubuntu:24.04` for glibc 2.39), posture
+`proceed`, timeout 5000 ms, one `steps/toolCallRequest` held 8 s before it
+reached the Guardian. Host audit: `timeout`, `proceeded` at 12:29:59.705Z; the
+command ran; the Guardian answered `deny` at 12:30:02.837Z for the same
+`rpc_id`. It also received the `toolCallResult` for that call before the
+request itself, with no reference linking the two. The fixture's own check
+failed with `Unexpected hook coverage` for the same evidence-timing reason as
+above. Capture, timeline and SHA-256:
+https://gist.github.com/AngeYobo/fe5cd44a864b4d54809cf1ded1e6d956
+
 ## Limitations
 
 This remains a bounded, single-request-lifecycle abstraction, extended but
@@ -550,6 +564,11 @@ breadth-first search simply reports the shorter window trace first there.
    choice for the specification, not something this model decides.
 
 ### Commands
+
+`./check-formal3.sh [path/to/tla2tools.jar]` runs all eleven checks (five
+configurations, six diagnostics) and flags any result that differs from
+`EXPECTED.txt`. TLC output goes to `~/acs-evidence/`. The loop below does the
+same for the configurations only.
 
 ```sh
 for c in ACSAuthorizationExecution.cfg ACSAuthorizationExecution-unsafe.cfg \
