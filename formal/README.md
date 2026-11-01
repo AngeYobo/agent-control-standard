@@ -268,13 +268,13 @@ Runs completed on 2026-09-16 using the same toolchain as Formal-1:
 - Linux **6.6.87.2-microsoft-standard-WSL2**, amd64.
 - Breadth-first exploration; no symmetry reduction or state constraint.
 
-All commands below ran from `/home/ange/agent-control-standard/formal`.
+All commands below ran from `/home/ange/agent-control-standard/formal`. To reproduce, run them from `formal/` with `TLA_JAR` set to your `tla2tools.jar`.
 Generated TLC state data and diagnostic configurations were kept in `/tmp`.
 
 ### Safe configuration
 
 ```sh
-java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-safe -config ACSAuthorizationExecution.cfg ACSAuthorizationExecution.tla
+java -cp "$TLA_JAR" tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-safe -config ACSAuthorizationExecution.cfg ACSAuthorizationExecution.tla
 ```
 
 `PermitSecondExecution = FALSE`; `PermitLateDecisionReplacement = FALSE`;
@@ -288,7 +288,9 @@ The depth of the complete state graph search is 6.
 
 All configured invariants passed: `TypeOK`, `DenyPreventsInvocation`,
 `InvocationMatchesApprovedInvocation`, `AtMostOneExecutionPerDecision`, and
-`EffectiveDecisionStable`. TLC exited with status 0. This is a finite model
+`EffectiveDecisionStable` (since Formal-3 the configuration also checks
+`DispatchedDecisionStable` and `DispatchedUnderPermit`, with the same result).
+TLC exited with status 0. This is a finite model
 result, not an ACS conformance assessment or an implementation
 verification. The larger state count relative to Formal-1 (67 vs. 19
 generated, 37 vs. 13 distinct, depth 6 vs. 5) reflects the added `Timeout`,
@@ -299,7 +301,7 @@ paths all being reachable within the same bounded, single-cycle abstraction.
 ### P4 unsafe configuration (preserved)
 
 ```sh
-java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-p4-unsafe -config ACSAuthorizationExecution-unsafe.cfg ACSAuthorizationExecution.tla
+java -cp "$TLA_JAR" tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-p4-unsafe -config ACSAuthorizationExecution-unsafe.cfg ACSAuthorizationExecution.tla
 ```
 
 `PermitSecondExecution = TRUE`; `PermitLateDecisionReplacement = FALSE`;
@@ -340,7 +342,7 @@ the real implementation permits a second execution.
 ### Late-decision-replacement unsafe configuration (new)
 
 ```sh
-java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-late-unsafe -config ACSAuthorizationExecution-late-unsafe.cfg ACSAuthorizationExecution.tla
+java -cp "$TLA_JAR" tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-late-unsafe -config ACSAuthorizationExecution-late-unsafe.cfg ACSAuthorizationExecution.tla
 ```
 
 `PermitSecondExecution = FALSE`; `PermitLateDecisionReplacement = TRUE`;
@@ -380,7 +382,7 @@ the late DENY did not become effective.
 ```sh
 cp ACSAuthorizationExecution.cfg /tmp/acs-formal2-unknown.cfg
 printf '\nINVARIANT NoExecutedUnknown\n' >> /tmp/acs-formal2-unknown.cfg
-java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-unknown-run -config /tmp/acs-formal2-unknown.cfg ACSAuthorizationExecution.tla
+java -cp "$TLA_JAR" tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-unknown-run -config /tmp/acs-formal2-unknown.cfg ACSAuthorizationExecution.tla
 ```
 
 ```text
@@ -402,7 +404,7 @@ this model.
 ```sh
 cp ACSAuthorizationExecution.cfg /tmp/acs-formal2-latewitness.cfg
 printf '\nINVARIANT NoLateDenyAfterProceedSettlement\n' >> /tmp/acs-formal2-latewitness.cfg
-java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-latewitness-run -config /tmp/acs-formal2-latewitness.cfg ACSAuthorizationExecution.tla
+java -cp "$TLA_JAR" tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-latewitness-run -config /tmp/acs-formal2-latewitness.cfg ACSAuthorizationExecution.tla
 ```
 
 ```text
@@ -575,7 +577,7 @@ for c in ACSAuthorizationExecution.cfg ACSAuthorizationExecution-unsafe.cfg \
          ACSAuthorizationExecution-late-unsafe.cfg \
          ACSAuthorizationExecution-commit-at-dispatch.cfg \
          ACSAuthorizationExecution-late-after-dispatch-unsafe.cfg; do
-  java -cp tla2tools.jar tlc2.TLC -workers 1 -config "$c" ACSAuthorizationExecution.tla
+  java -cp "$TLA_JAR" tlc2.TLC -workers 1 -config "$c" ACSAuthorizationExecution.tla
 done
 ```
 
