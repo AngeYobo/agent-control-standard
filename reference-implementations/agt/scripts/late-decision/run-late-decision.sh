@@ -13,6 +13,12 @@ REPO="${REPO:-$HOME/agent-control-standard}"
 AGT="$REPO/reference-implementations/agt"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DELAY="${DELAY:-8}"
+# The pinned AGT native binding needs glibc >= 2.39; Ubuntu 22.04 has 2.35.
+# "docker" runs only the Guardian in ubuntu:24.04, with the repository mounted
+# read-only (same node_modules, same binary) and the host's own bun binary.
+GUARDIAN_RUNTIME="${GUARDIAN_RUNTIME:-docker}"
+GUARDIAN_IMAGE="${GUARDIAN_IMAGE:-ubuntu:24.04}"
+CNAME="acs-late-guardian-$$"
 EVID="$HOME/acs-evidence/late-decision-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$EVID"
 echo "evidence: $EVID"
@@ -32,6 +38,12 @@ GP=$(free_port); PP=$(free_port)
   echo "python: $(python3 --version 2>&1)"
   echo "kernel: $(uname -sr)"
   echo "delay_seconds: $DELAY"
+  echo "host_glibc: $(ldd --version | head -1)"
+  echo "guardian_runtime: $GUARDIAN_RUNTIME"
+  if [[ "$GUARDIAN_RUNTIME" == docker ]]; then
+    echo "guardian_image: $GUARDIAN_IMAGE $(docker image inspect "$GUARDIAN_IMAGE" --format '{{.Id}}')"
+    echo "guardian_glibc: $(docker run --rm "$GUARDIAN_IMAGE" ldd --version | head -1)"
+  fi
   echo "guardian_port: $GP"
   echo "proxy_port: $PP"
 } > "$EVID/provenance.txt"
@@ -39,16 +51,31 @@ git -C "$REPO" diff ea1e3459c7a43d354bfd0f84391dee044b7a581f -- reference-implem
 cp "$HERE/delay-proxy.py" "$HERE/run-late-decision.sh" "$EVID/"
 
 # ── Guardian (unmodified), then proxy ─────────────────────────────────────────
-cleanup() { [[ -n "${PXPID:-}" ]] && kill "$PXPID" 2>/dev/null || true; [[ -n "${GPID:-}" ]] && kill "$GPID" 2>/dev/null || true; }
+cleanup() {
+  [[ -n "${PXPID:-}" ]] && kill "$PXPID" 2>/dev/null || true
+  if [[ "$GUARDIAN_RUNTIME" == docker ]]; then docker stop -t 2 "$CNAME" >/dev/null 2>&1 || true; fi
+  [[ -n "${GPID:-}" ]] && kill "$GPID" 2>/dev/null || true
+}
 trap cleanup EXIT
 
-( cd "$AGT" && ACS_GUARDIAN_PORT="$GP" ACS_GUARDIAN_HOST=127.0.0.1 \
-    ACS_ON_DECISION_FAILURE=proceed \
-    ACS_ENVELOPE_LOG="$EVID/guardian-envelopes.jsonl" \
-    ACS_SESSION_CONTEXT_LOG="$EVID/guardian-context.jsonl" \
-    exec bun run packages/guardian/src/main.ts ) > "$EVID/guardian.log" 2>&1 &
+if [[ "$GUARDIAN_RUNTIME" == docker ]]; then
+  docker run --rm --name "$CNAME" --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+    -v "$(command -v bun):/usr/local/bin/bun:ro" \
+    -v "$REPO:$REPO:ro" -v "$EVID:$EVID" -w "$AGT" \
+    -e ACS_GUARDIAN_PORT="$GP" -e ACS_GUARDIAN_HOST=127.0.0.1 \
+    -e ACS_ON_DECISION_FAILURE=proceed \
+    -e ACS_ENVELOPE_LOG="$EVID/guardian-envelopes.jsonl" \
+    -e ACS_SESSION_CONTEXT_LOG="$EVID/guardian-context.jsonl" \
+    "$GUARDIAN_IMAGE" bun run packages/guardian/src/main.ts > "$EVID/guardian.log" 2>&1 &
+else
+  ( cd "$AGT" && ACS_GUARDIAN_PORT="$GP" ACS_GUARDIAN_HOST=127.0.0.1 \
+      ACS_ON_DECISION_FAILURE=proceed \
+      ACS_ENVELOPE_LOG="$EVID/guardian-envelopes.jsonl" \
+      ACS_SESSION_CONTEXT_LOG="$EVID/guardian-context.jsonl" \
+      exec bun run packages/guardian/src/main.ts ) > "$EVID/guardian.log" 2>&1 &
+fi
 GPID=$!
-for _ in $(seq 100); do grep -q "Guardian listening" "$EVID/guardian.log" 2>/dev/null && break; sleep 0.1; done
+for _ in $(seq 150); do grep -q "Guardian listening" "$EVID/guardian.log" 2>/dev/null && break; sleep 0.1; done
 grep -q "Guardian listening" "$EVID/guardian.log" || { echo "Guardian did not start"; cat "$EVID/guardian.log"; exit 1; }
 
 python3 "$HERE/delay-proxy.py" --listen-port "$PP" --upstream "http://127.0.0.1:$GP/acs" \
