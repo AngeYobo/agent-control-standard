@@ -1,0 +1,16 @@
+Base files Formal-3 was built on (LF line endings). Check yours first:
+1f048e031118e9bf8bf1ef79c2765f9dad9d6d5d4e0cbbeaa16e6f47dc462a8d  ACSAuthorizationExecution.tla
+8c9551e4023d9fcc1b92fa896e4fae501f27e34020dfd80ade9f9f49d86ddebb  README.md
+
+Expected ./check-formal3.sh output (states may differ slightly on another TLC version; results must not):
+ACSAuthorizationExecution                         No error                                   67 generated, 37 distinct
+ACSAuthorizationExecution-unsafe                  AtMostOneExecutionPerDecision violated     26 / 22
+ACSAuthorizationExecution-late-unsafe             EffectiveDecisionStable violated           11 / 11
+ACSAuthorizationExecution-commit-at-dispatch      No error                                   65 / 37
+ACSAuthorizationExecution-late-after-dispatch-unsafe  DispatchedDecisionStable violated      22 / 19
+diag-safe-unknown                                 NoExecutedUnknown violated                 12 / 12
+diag-safe-late                                    NoLateDenyAfterProceedSettlement violated  11 / 11
+diag-safe-after-dispatch                          NoLateDenyAfterDispatch violated           21 / 19
+diag-safe-before-dispatch                         NoLateDenyBeforeDispatch violated          11 / 11
+diag-cad-stable                                   EffectiveDecisionStable violated           11 / 11
+diag-cad-after                                    NoLateDenyAfterDispatch violated           22 / 19

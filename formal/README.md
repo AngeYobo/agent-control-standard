@@ -457,6 +457,114 @@ breadth-first exploration in this small, finite abstraction does not
 generalize to a claim about the real system's behavior under load, timing
 variation, or repeated requests.
 
+## Formal-3: settlement versus dispatch
+
+Formal-2 settles the effective decision in `Timeout` and enters the tool later,
+in `InvokeMatchingTool`. Those are separate steps, so the model contains a
+window that Phase 4E did not find in the OpenCode adapter: a Guardian answer
+can arrive after the fallback has settled but before any tool entry. The
+`late-unsafe` counterexample lands in that window (its State 4 has
+`executionCount = 0`): the late DENY replaces PROCEED before anything ran. Read
+on its own, that trace shows a late DENY *blocking* an action, which is not
+obviously unsafe. Formal-3 separates the two questions.
+
+### What changed
+
+- `effectiveDecisionAtDispatch`: frozen copy of `effectiveDecision`, taken in
+  `InvokeMatchingTool`, i.e. the value actually consulted when the tool was
+  entered. Bookkeeping, not a wire field.
+- `CommitAtDispatch` (constant): what a DENY arriving inside the window does.
+  - `FALSE`, *commit at settlement*: the settled value is final. This is the
+    Formal-2 behaviour and what Phase 4E found in source, where settlement and
+    dispatch release are synchronous so the window is empty.
+  - `TRUE`, *commit at dispatch*: a DENY arriving after settlement and before
+    tool entry replaces the fallback and blocks. A design alternative, not an
+    ACS rule.
+- `DispatchedDecisionStable`: once the tool has been entered, the effective
+  decision is the one that dispatched. `DispatchedUnderPermit`: what
+  dispatched was ALLOW or PROCEED.
+- Diagnostics `NoLateDenyAfterDispatch` and `NoLateDenyBeforeDispatch`.
+
+All Formal-2 actions, constants and invariants are unchanged apart from the
+added variable; the late-DENY branch gains one disjunct,
+`CommitAtDispatch /\ executionCount = 0`.
+
+### Results
+
+Toolchain: TLC2 2.19 of 08 August 2024 (rev 5a47802), openjdk version "17.0.11" 2024-04-16,
+Linux 6.6.87.2-microsoft-standard-WSL2, one worker, breadth-first, no symmetry
+or constraint, run with `./check-formal3.sh` on 2026-11-01. Cross-checked with
+TLC2 2026.10.30 (rev 090e85c) on OpenJDK 21: identical verdicts and identical
+state counts for all eleven checks. Formal-2's three
+configurations reproduce exactly (67/37/6; AtMostOne at depth 5;
+EffectiveDecisionStable at depth 4), now also checking the two new
+invariants.
+
+| Configuration | Result |
+| --- | --- |
+| safe (`CommitAtDispatch = FALSE`) | No error. 67 generated, 37 distinct, depth 6. |
+| `-commit-at-dispatch` | No error on TypeOK, DenyPreventsInvocation, InvocationMatchesApprovedInvocation, AtMostOne, DispatchedDecisionStable, DispatchedUnderPermit. 65 / 37, depth 6. `EffectiveDecisionStable` is deliberately not listed: under this choice it is expected to fail (below). |
+| `-late-after-dispatch-unsafe` (`PermitLateDecisionReplacement = TRUE`) | `DispatchedDecisionStable` violated at depth 5. |
+
+Traces (`effective`, `count`, `atDispatch`, `guardian`):
+
+```text
+late-after-dispatch-unsafe     -- the replacement Formal-3 rules out
+  3 Timeout              PROCEED  0  NONE     NONE
+  4 InvokeMatchingTool   PROCEED  1  PROCEED  NONE
+  5 ReceiveGuardianDeny  DENY     1  PROCEED  DENY     <- record now says DENY for a tool that ran
+
+commit-at-dispatch, diagnostic EffectiveDecisionStable   -- by design
+  3 Timeout              PROCEED  0  NONE     NONE
+  4 ReceiveGuardianDeny  DENY     0  NONE     DENY     <- DENY in the window blocks; nothing ran
+
+commit-at-dispatch, diagnostic NoLateDenyAfterDispatch   -- the Phase 4F-v2 runtime case
+  3 Timeout              PROCEED  0  NONE     NONE
+  4 InvokeMatchingTool   PROCEED  1  PROCEED  NONE
+  5 ReceiveGuardianDeny  PROCEED  1  PROCEED  DENY     <- ran under PROCEED; DENY recorded, not effective
+
+safe, diagnostic NoLateDenyAfterDispatch
+  3 Timeout              PROCEED  0  NONE     NONE
+  4 ReceiveGuardianDeny  PROCEED  0  NONE     DENY     <- DENY already known ...
+  5 InvokeMatchingTool   PROCEED  1  PROCEED  DENY     <- ... and the tool still runs
+```
+
+The post-dispatch transitions are identical under both values of
+`CommitAtDispatch` (the extra disjunct requires `executionCount = 0`), so the
+`commit-at-dispatch` trace above is also reachable in the safe configuration;
+breadth-first search simply reports the shorter window trace first there.
+
+### What this says about #435
+
+1. **After dispatch** a late decision cannot change what ran, under either
+   choice. What remains is the record: `DispatchedDecisionStable` is the
+   statement that the effective decision is the one that dispatched, and the
+   Guardian's own answer is kept separately (`guardianDecision`). The
+   `late-after-dispatch-unsafe` trace is what a record keyed on "last value
+   received" would look like.
+2. **Between settlement and dispatch** the two choices genuinely differ. Commit
+   at settlement lets a tool run although its DENY is already on record (last
+   trace above). Commit at dispatch blocks it. Phase 4E says the OpenCode
+   adapter has no such window, so the question does not arise there; it can
+   arise for any host that settles and dispatches in separate steps. That is a
+   choice for the specification, not something this model decides.
+
+### Commands
+
+```sh
+for c in ACSAuthorizationExecution.cfg ACSAuthorizationExecution-unsafe.cfg \
+         ACSAuthorizationExecution-late-unsafe.cfg \
+         ACSAuthorizationExecution-commit-at-dispatch.cfg \
+         ACSAuthorizationExecution-late-after-dispatch-unsafe.cfg; do
+  java -cp tla2tools.jar tlc2.TLC -workers 1 -config "$c" ACSAuthorizationExecution.tla
+done
+```
+
+Diagnostics append one invariant to a copy of a configuration, as in the
+Formal-2 commands above: `NoLateDenyAfterDispatch` and
+`NoLateDenyBeforeDispatch` to the safe configuration, `EffectiveDecisionStable`
+and `NoLateDenyAfterDispatch` to `-commit-at-dispatch`.
+
 ## P3 status
 
 `P3 = UNMEASURED / UNRESOLVED`, unchanged by this refinement.
