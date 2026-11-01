@@ -26,6 +26,28 @@ bun = shutil.which('bun')
 opencode = shutil.which('opencode')
 if not bun or not opencode:
     parser.error('Install bun and opencode and put them on PATH')
+# Opt-in seam (Phase 4F.2): an externally managed, already-running Guardian,
+# for a future controlled-decision experiment. Absent, behavior is identical
+# to before this option existed. Present, this fixture does not allocate a
+# port or launch its own Guardian, and does not own that process's lifecycle.
+external_guardian_url = os.environ.get('ACS_TEST_GUARDIAN_URL')
+guardian_mode = 'external' if external_guardian_url else 'internal'
+if guardian_mode == 'external' and args.scenario != 'live':
+    parser.error('ACS_TEST_GUARDIAN_URL is only supported with the live scenario; '
+                  'proceed-loss and deny-loss inject a fault by terminating a Guardian '
+                  'process this fixture owns, which an externally managed Guardian is not')
+# Opt-in seam (Phase 4F.5): where to read Guardian envelope evidence from,
+# for the same future controlled-decision experiment Phase 4F.2 introduced
+# ACS_TEST_GUARDIAN_URL for. Absent, behavior is identical to before this
+# option existed. Present, this fixture reads raw evidence from the named
+# file instead of this run's own directory; it does not create, write, or
+# relocate it. Scoped to external Guardian mode only: internal mode already
+# knows exactly where its own Guardian wrote this evidence.
+external_envelope_log = os.environ.get('ACS_TEST_ENVELOPE_LOG')
+if external_envelope_log and guardian_mode != 'external':
+    parser.error('ACS_TEST_ENVELOPE_LOG is only meaningful together with ACS_TEST_GUARDIAN_URL: '
+                 'it names an externally managed Guardian\'s own envelope log for this fixture to '
+                 'read as evidence, and internal mode already knows where its own Guardian wrote it')
 root.mkdir(parents=True)
 # Use only the environment needed for local executables. Do not inherit provider
 # credentials or host settings. PWD and --dir must agree with subprocess cwd.
@@ -33,17 +55,26 @@ env = {key: os.environ[key] for key in ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_AL
 env['PWD'] = str(root.resolve())
 for kind in ['DATA', 'CACHE', 'CONFIG', 'STATE']:
     env[f'XDG_{kind}_HOME'] = str(root / ('xdg-' + kind.lower()))
-with socket.socket() as sock:
-    sock.bind(('127.0.0.1', 0))
-    port = sock.getsockname()[1]
-env.update(ACS_GUARDIAN_PORT=str(port), ACS_GUARDIAN_HOST='127.0.0.1',
-           ACS_GUARDIAN_URL=f'http://127.0.0.1:{port}/acs',
-           ACS_ON_DECISION_FAILURE='deny' if args.scenario == 'deny-loss' else 'proceed',
+if guardian_mode == 'internal':
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    env.update(ACS_GUARDIAN_PORT=str(port), ACS_GUARDIAN_HOST='127.0.0.1',
+               ACS_GUARDIAN_URL=f'http://127.0.0.1:{port}/acs')
+else:
+    env.update(ACS_GUARDIAN_URL=external_guardian_url)
+env.update(ACS_ON_DECISION_FAILURE='deny' if args.scenario == 'deny-loss' else 'proceed',
            ACS_AUDIT_LOG=str(root / 'audit.jsonl'), ACS_ENVELOPE_LOG=str(root / 'envelopes.jsonl'),
            ACS_SESSION_CONTEXT_LOG=str(root / 'context.jsonl'))
-guardian_log = (root / 'guardian.log').open('w')
-guardian = subprocess.Popen([bun, 'run', 'packages/guardian/src/main.ts'],
-                            cwd=tree, env=env, stdout=guardian_log, stderr=subprocess.STDOUT)
+if guardian_mode == 'internal':
+    guardian_log = (root / 'guardian.log').open('w')
+    guardian = subprocess.Popen([bun, 'run', 'packages/guardian/src/main.ts'],
+                                cwd=tree, env=env, stdout=guardian_log, stderr=subprocess.STDOUT)
+else:
+    # This fixture does not own the external Guardian's lifecycle: it neither
+    # starts it (above) nor stops it (see the `finally` block below).
+    guardian_log = None
+    guardian = None
 commands = ["printf '%s\\n' 'ACS_ALLOWED' > allowed.txt",
             "echo rm -rf / > denied.txt" if args.scenario == 'live'
             else "printf '%s\\n' 'ACS_OUTAGE' > outage.txt"]
@@ -102,14 +133,18 @@ config = {
         'models': {'model-1': {'id': 'model-1', 'tool_call': True, 'limit': {'context': 32768, 'output': 4096}}}}}}
 (root / 'opencode.json').write_text(json.dumps(config, indent=2))
 try:
-    for _ in range(100):
-        if 'Guardian listening at' in (root / 'guardian.log').read_text():
-            break
-        if guardian.poll() is not None:
-            raise RuntimeError((root / 'guardian.log').read_text())
-        time.sleep(.1)
-    else:
-        raise RuntimeError('Guardian startup timed out')
+    if guardian_mode == 'internal':
+        for _ in range(100):
+            if 'Guardian listening at' in (root / 'guardian.log').read_text():
+                break
+            if guardian.poll() is not None:
+                raise RuntimeError((root / 'guardian.log').read_text())
+            time.sleep(.1)
+        else:
+            raise RuntimeError('Guardian startup timed out')
+    # External mode: readiness of an externally managed Guardian is that
+    # caller's own responsibility, established before this fixture is
+    # invoked; this fixture does not probe it.
     with (root / 'host.jsonl').open('w') as stdout, (root / 'host.stderr').open('w') as stderr:
         result = subprocess.run([opencode, 'run', '--dir', str(root), '--model', 'stub/model-1',
                                  '--title', 'ACS decision-honoring fixture', '--format', 'json', 'Run the conformance fixture.'],
@@ -121,7 +156,7 @@ try:
         path = root / name
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
-    wire = rows('envelopes.jsonl')
+    wire = rows(external_envelope_log) if external_envelope_log else rows('envelopes.jsonl')
     host = rows('host.jsonl')
     audit = rows('audit.jsonl')
     tools = [event['part'] for event in host if event['type'] == 'tool_use']
@@ -182,6 +217,7 @@ try:
         'bun': subprocess.check_output([bun, '--version'], text=True).strip(),
         'opencode': subprocess.check_output([opencode, '--version'], text=True).strip(),
         'agt_pin': json.loads((tree / 'agt.lock').read_text()), 'negotiated_posture': posture,
+        'guardian_mode': guardian_mode, 'guardian_url': env['ACS_GUARDIAN_URL'],
         'guardian_stopped_after_first_tool': fault_injected,
         'wire_responses': responses,
         'tool_outcomes': [{'call_id': part['callID'], 'command': part['state']['input']['command'],
@@ -197,7 +233,10 @@ finally:
     (root / 'model-requests.json').write_text(json.dumps(model_requests, indent=2))
     server.shutdown()
     server.server_close()
-    if guardian.poll() is None:
+    # Only ever terminates a Guardian process this fixture itself started;
+    # an externally managed Guardian (guardian is None) is left running.
+    if guardian is not None and guardian.poll() is None:
         guardian.terminate()
         guardian.wait(timeout=10)
-    guardian_log.close()
+    if guardian_log is not None:
+        guardian_log.close()

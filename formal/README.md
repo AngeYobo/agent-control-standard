@@ -1,203 +1,478 @@
 # Experimental decision-to-execution model
 
-This model explores whether one request-gate ALLOW can precede two execution
-occurrences. The safe configuration prevents this; the deliberately unsafe
-configuration permits it. **AtMostOneExecutionPerDecision is experimental, not
-an identified ACS normative requirement.** The model does not define an ACS
-authorization token or change ACS semantics.
+This model explores two related questions about the authorization-to-execution
+boundary. Formal-1 asked whether one request-gate ALLOW can precede two
+execution occurrences. Formal-2 adds a second, motivated by runtime evidence
+gathered after Formal-1 was written: whether the model can represent the
+difference between a Guardian's own decision and the decision that actually
+becomes effective for dispatch, including a timeout fallback and a Guardian
+response that arrives too late to matter.
+
+**AtMostOneExecutionPerDecision is experimental, not an identified ACS
+normative requirement.** **EffectiveDecisionStable is implementation-derived
+and experimentally supported, also not an identified ACS normative
+requirement.** The model does not define an ACS authorization token or change
+ACS semantics. Unsafe-model traces in this directory are deliberately
+constructed counterexamples inside this abstraction; they are not claims
+about the real ACS, AGT, or OpenCode implementation, and no runtime
+experiment was performed in this Formal-2 phase itself.
+
+## Why Formal-2 exists
+
+Formal-1's `decision` variable conflated two things the runtime investigation
+later showed are genuinely distinct: what the Guardian says, and what a host
+actually uses to decide whether a tool call proceeds. Two prior phases
+motivated separating them:
+
+- **Phase 4E** (read-only source analysis of `packages/host-adapter/src`)
+  established that a governed request's decision wait settles as a plain
+  JavaScript Promise, exactly once; that on timeout it settles with
+  `decisionArrived: false`; that the failure-posture resolution which follows
+  is fully synchronous, with no further `await`; and that no code path in the
+  adapter re-reads a Guardian response after that Promise has already
+  settled. This is implementation analysis, not a runtime observation.
+- **Phase 4F-v2** (one controlled runtime trial, external real Guardian, real
+  OpenCode, real host adapter, genuine policy evaluation for every request
+  except one deliberately delayed target) observed, for one governed
+  `bash` invocation: the client's decision wait timed out; the negotiated
+  failure posture resolved to PROCEED; the command executed; and the
+  Guardian later emitted DENY for the very same request, which did not
+  change the outcome. Full report:
+  `/tmp/acs-phase4fv2-20260916/REPORT.md` (outside this repository's tracked
+  tree). Classification there: `EFFECTIVE DECISION VALIDATED: PROCEED`.
+
+Formal-2 refines the model so it can represent this distinction structurally,
+rather than only describe it in prose. The refinement is motivated by these
+two reports; it does not re-run them, and it does not strengthen either
+report's own conclusions.
 
 ## Audit baseline
 
 This work depends on the #113 host fixture identified in the task as
 `carloshvp:agt-host-conformance-report`, inspected at
-`ea1e3459c7a43d354bfd0f84391dee044b7a581f`. The pinned fixture's own documentation
-references #92. This directory contains formal-model evidence only; no AGT or
-OpenCode execution experiment was performed here.
+`ea1e3459c7a43d354bfd0f84391dee044b7a581f`. The pinned fixture's own
+documentation references #92. This directory contains formal-model evidence
+only; the runtime evidence Formal-2 responds to was gathered separately, in
+Phase 4A through Phase 4F-v2, and is not reproduced here.
 
-The authoritative audit classifications for this experiment are:
+The authoritative audit classifications for the Formal-1 scope are unchanged:
 
 | Property | Classification | Treatment |
 | --- | --- | --- |
-| P1: no execution without applicable approval | Unsupported as an unconditional ACS requirement | The scoped model allows execution only after ALLOW, but does not assert this as universal ACS behavior. |
+| P1: no execution without applicable approval | Unsupported as an unconditional ACS requirement | The scoped model allows execution only after an effective permit, but does not assert this as universal ACS behavior. |
 | P2: request-gate DENY prevents invocation | Normative | `DenyPreventsInvocation`. |
-| P3: executed invocation matches approved invocation | Derived | `InvocationMatchesApprovedInvocation`, using abstract identifier equality. |
+| P3: executed invocation matches approved invocation | Derived | `InvocationMatchesApprovedInvocation`, using abstract identifier equality. Remains `UNMEASURED / UNRESOLVED` at the runtime level; see below. |
 | P4: at most one execution per decision | Experimental | `AtMostOneExecutionPerDecision`. |
 | P5: observing execution does not imply successful effect completion | Derived | Reachability of executed state with effect `UNKNOWN`. |
 | P6: envelope replay differs from invocation re-execution | Derived/event-taxonomy distinction | Envelope replay is outside this model. |
 
+Formal-2 adds one further classification, described in full below:
+
+| Property | Classification | Treatment |
+| --- | --- | --- |
+| P7: effective decision, once settled, is not replaced by a later Guardian response | Implementation-derived / experimentally supported | `EffectiveDecisionStable`. Motivated by Phase 4E's source analysis and Phase 4F-v2's one controlled runtime trial; not an identified ACS normative requirement. |
+
 P2 maps to [Instrument §6.4](../docs/spec/instrument/specification.md#64-honoring-decisions-normative).
-That section also permits audited fail-open execution, which is why unconditional
-P1 is unsupported. P3 is derived from decision honoring and the
-[pre-dispatch hook requirement](../docs/spec/instrument/hooks.md#toolcallrequest).
-P4 adds an experimental guard; it is not a maintainer interpretation of ACS.
-Envelope replay has its own [§10.3 requirement](../docs/spec/instrument/specification.md#103-replay-protection).
-A real implementation that skips a required hook must be assessed against that
-requirement separately from experimental P4.
+That section also permits audited fail-open execution, which is why
+unconditional P1 is unsupported and why this model represents a fallback
+PROCEED path at all. P3 is derived from decision honoring and the
+[pre-dispatch hook requirement](../docs/spec/instrument/hooks.md#toolcallrequest);
+Formal-2 does not change P3's status, and the model's own
+`InvocationMatchesApprovedInvocation` invariant is scoped to genuine ALLOW
+only, deliberately not extended to the PROCEED path, where no approved
+invocation exists to compare against (see below). P4 adds an experimental
+guard; it is not a maintainer interpretation of ACS. P7 is new in Formal-2
+and is deliberately not claimed as normative: no ACS specification text
+establishing a late-decision-discard requirement was consulted before
+writing it; it restates, as a checkable model property, what Phase 4E found
+in source and what Phase 4F-v2 observed once at runtime.
 
 ## State and assumptions
 
-Exactly one request lifecycle is modeled. Either abstract invocation `I` or `J`
-can be submitted. These are distinct TLC model values, not strings or commands.
-The string `"NONE"` is a separate sentinel. Equality of identifiers is the entire
-invocation comparison; it does not define general ACS semantic equivalence.
+Exactly one request lifecycle is modeled. Either abstract invocation `I` or
+`J` can be submitted. These are distinct TLC model values, not strings or
+commands. The string `"NONE"` is a separate sentinel. Equality of identifiers
+is the entire invocation comparison; it does not define general ACS semantic
+equivalence.
 
 | Variable | Meaning |
 | --- | --- |
 | `request` | Submitted invocation identifier; fixed after submission. |
-| `decision` | `NONE`, `ALLOW`, or `DENY`; issued once and never reevaluated. |
-| `approvedInvocation` | Copy of the request on ALLOW; `NONE` otherwise. |
+| `guardianDecision` | `NONE`, `ALLOW`, or `DENY`; what the Guardian itself answered, whenever it answered, issued once and never reevaluated. Its arrival is decoupled from whether it affects dispatch. |
+| `effectiveDecision` | `NONE`, `ALLOW`, `DENY`, or `PROCEED`; the value actually consulted to permit or block dispatch. Settles once, either from a timely `guardianDecision` or from `Timeout`'s fallback PROCEED. |
+| `effectiveDecisionAtSettlement` | Frozen copy of `effectiveDecision` taken at first settlement; bookkeeping this model needs to detect a later, illegitimate change. Not a wire field, token, or authorization object. |
+| `approvedInvocation` | Copy of the request on a genuine, timely ALLOW; `NONE` otherwise, including throughout the PROCEED path, where nothing was ever approved. |
 | `actualInvocation` | Identifier of the most recent invocation reaching the modeled tool. |
 | `executionCount` | Number of execution occurrences, independently of effect completion. |
 | `decisionUsed` | Experimental Boolean bookkeeping for the execution guard; not a wire field, token, or authorization object. |
 | `effect` | Observed effect of the most recent occurrence: `NONE`, `UNKNOWN`, `SUCCESS`, or `FAILURE`. |
 
-`executionCount` has type `Nat`. The transition relation bounds it to one in the
-safe configuration and two in the unsafe configuration. This provides a finite
-state space sufficient to witness a second execution, not a proof about arbitrary
-repetition. Updating `decisionUsed` and counting an execution are atomic in this
-sequential model.
+`executionCount` has type `Nat`. The transition relation bounds it to one in
+the safe and late-unsafe configurations and two in the P4 unsafe
+configuration. This provides a finite state space sufficient to witness a
+second execution, not a proof about arbitrary repetition. Updating
+`decisionUsed` and counting an execution are atomic in this sequential model.
+
+### Guardian decision versus effective decision
+
+This is the central Formal-2 distinction. `guardianDecision` and
+`effectiveDecision` are separate variables so the model can represent a
+Guardian answer that exists (is on record) without being the value dispatch
+actually consulted. A logged or recorded Guardian decision does not
+unconditionally imply it was effective; this directory's earlier runtime
+phases (Phase 4D, Phase 4F.3, Phase 4F-v2) each had to establish that
+distinction empirically, by reading Guardian-side evidence and separately
+establishing what the client actually consumed, rather than assuming the
+two were the same fact. The model now makes that same discipline structural:
+`ReceiveGuardianAllow` and `ReceiveGuardianDeny` always set
+`guardianDecision`, but only set `effectiveDecision` when it was still
+`NONE` (a timely arrival) or, for `ReceiveGuardianDeny` alone, when
+`PermitLateDecisionReplacement` is deliberately enabled (the late-unsafe
+configuration). `ReceiveGuardianAllow` has no such bypass at all: nothing in
+the two runtime investigations behind this refinement examined a late-ALLOW
+replacement scenario, and this model does not assert one exists.
+
+### Timeout and failure posture
+
+`Timeout` is a distinct action, not a value collapsed into `guardianDecision
+= "NONE"`. It requires `guardianDecision = "NONE" /\ effectiveDecision =
+"NONE"` (genuinely still pending, nothing has arrived) and sets
+`effectiveDecision' = "PROCEED"`. This distinguishes "no decision has
+arrived yet" (`effectiveDecision = "NONE"`, `guardianDecision = "NONE"`)
+from "waiting has already settled by fallback" (`effectiveDecision =
+"PROCEED"`), which a bare `GuardianDecision = NONE` encoding could not have
+told apart.
+
+The model represents exactly one failure posture, PROCEED, because that is
+the posture Phase 4F-v2 actually exercised at runtime
+(`ACS_ON_DECISION_FAILURE=proceed`, `posture_source: "negotiated"` in that
+run's own `audit.jsonl`). A DENY failure posture is a real, documented ACS
+configuration this model does not currently represent; nothing here implies
+PROCEED is the only correct or universally required posture, and extending
+`Timeout` to a configurable fallback value is a candidate future refinement,
+not implemented in this phase to keep the state space and the runtime
+correspondence narrow and exact.
 
 ### Actions
 
-- `SubmitRequest(i)` submits one identifier. No reset or second request is possible.
-- `EvaluateAllow` copies the request to `approvedInvocation`; `EvaluateDeny`
-  leaves that field empty. Both are separate from tool entry.
-- `InvokeMatchingTool` requires an unused ALLOW and records the first tool entry.
-  It sets the observed effect to `UNKNOWN`, without asserting completion.
-- `InvokeDifferentTool(i)` represents an attempted mismatching dispatch. Both
-  configurations reject it with an unchanged state. The action name denotes an
-  attempt, not a tool entry. Attempt history is deliberately not stored.
-- `ObserveSuccess` and `ObserveFailure` represent evidence becoming available
-  after execution. Neither issues a decision or increments the count.
+- `SubmitRequest(i)` submits one identifier. No reset or second request is
+  possible.
+- `Timeout` settles `effectiveDecision` to `"PROCEED"` when nothing has
+  arrived yet, and freezes `effectiveDecisionAtSettlement`.
+- `ReceiveGuardianAllow` and `ReceiveGuardianDeny` record the Guardian's own
+  answer in `guardianDecision`, and settle `effectiveDecision` (and freeze
+  `effectiveDecisionAtSettlement`) only on a timely arrival, or, for DENY
+  alone, when `PermitLateDecisionReplacement` deliberately permits an
+  already-settled value to be overwritten.
+- `InvokeMatchingTool` requires `effectiveDecision \in {"ALLOW", "PROCEED"}`
+  (an explicit permit or the fallback) and records the first tool entry. It
+  sets `actualInvocation'` to the approved invocation under a genuine ALLOW,
+  or to the raw request under PROCEED, where nothing was approved. It sets
+  the observed effect to `UNKNOWN`, without asserting completion.
+- `InvokeDifferentTool(i)` represents an attempted mismatching dispatch,
+  scoped to a genuine `effectiveDecision = "ALLOW"` only, unchanged in
+  spirit from Formal-1: under PROCEED there is no approved identity to
+  mismatch against at all (`approvedInvocation` stays `"NONE"`), so this
+  action's own semantics do not extend there. Both configurations reject a
+  mismatch with an unchanged state. The action name denotes an attempt, not
+  a tool entry. Attempt history is deliberately not stored.
+- `ObserveSuccess` and `ObserveFailure` represent evidence becoming
+  available after execution. Neither issues a decision or increments the
+  count.
 - `LoseEffectEvidence` returns an observed success or failure to `UNKNOWN`.
   This changes knowledge, not the underlying real-world outcome.
-- `AttemptSecondExecution` is enabled only in the unsafe configuration, after
-  the first execution. It reuses the same approved identifier and decision,
+- `AttemptSecondExecution` is enabled only when `PermitSecondExecution` is
+  set, after the first execution. It reuses the same effective decision,
   increments the count to two, and resets effect knowledge to `UNKNOWN`.
 
-In the safe configuration a second dispatch is disabled; temporal stuttering can
-represent a rejected attempt. DENY allows no execution action. Terminal DENY
-states are intentional, so both configurations set `CHECK_DEADLOCK FALSE`.
-There is no fairness or eventual-execution guarantee. The checks establish
-safety in this model, not that every ALLOW eventually executes.
+In the safe and late-unsafe configurations a second dispatch is disabled;
+temporal stuttering can represent a rejected attempt. An effective DENY
+allows no execution action. Terminal DENY states are intentional, so all
+three configurations set `CHECK_DEADLOCK FALSE`. There is no fairness or
+eventual-execution guarantee. The checks establish safety in this model, not
+that every permit eventually executes.
 
-P3 compares the last actual identifier to the approved identifier. Every modeled
-execution uses that same identifier; no invocation history is needed in this
-restricted model. This would need reconsideration before admitting arbitrary
-substitutions or multiple lifecycles.
+P3 compares the last actual identifier to the approved identifier, scoped to
+`effectiveDecision = "ALLOW"` only. Every modeled execution under a genuine
+ALLOW uses that same identifier; no invocation history is needed in this
+restricted model. Under PROCEED, the invariant is vacuously satisfied
+(its antecedent does not hold), which is the correct and deliberate
+reflection of P3's own runtime status: `P3 = UNMEASURED / UNRESOLVED`. This
+refinement does not strengthen that status. It would need reconsideration
+before admitting arbitrary substitutions or multiple lifecycles.
 
 ### Exclusions and evidence limits
 
-ASK, MODIFY, DEFER, failure-posture negotiation, concurrency, crashes, retries,
-distributed execution, multiple requests, and multiple decisions are excluded.
-Signatures, envelope IDs, timestamps, nonce checks, envelope replay, and real
-host dispatch are also excluded. `AttemptSecondExecution` does not submit an
-envelope and is not a test of §10.3 replay rejection.
+ASK, MODIFY, DEFER, concurrency, crashes, retries, distributed execution,
+multiple requests, and multiple decisions are excluded. A configurable
+DENY failure posture is excluded (see above). Signatures, envelope IDs,
+timestamps, nonce checks, envelope replay, and real host dispatch are also
+excluded. `AttemptSecondExecution` does not submit an envelope and is not a
+test of §10.3 replay rejection.
 
-`NONE` means no execution effect is yet associated with this lifecycle; `UNKNOWN`
-means execution is observed but completion is not established. The effect domain
-is experimental observation vocabulary, not an alteration of the ACS result
-schema's `exit_status` enum. Tool entry is distinct from successful completion.
-In the unsafe model, effect observations concern the latest occurrence only;
-there is no effect history or cross-occurrence attribution model.
+`NONE` means no execution effect is yet associated with this lifecycle;
+`UNKNOWN` means execution is observed but completion is not established.
+The effect domain is experimental observation vocabulary, not an alteration
+of the ACS result schema's `exit_status` enum. Tool entry is distinct from
+successful completion. In the unsafe models, effect observations concern the
+latest occurrence only; there is no effect history or cross-occurrence
+attribution model.
 
-The audit found `execution_id` in hook prose but optional `request_id_ref` in the
-result schema. Abstract identifiers avoid choosing between these representations;
-the mismatch remains unresolved for later implementation work. No maintainer
-interpretation of consumable decisions is assumed.
+The audit found `execution_id` in hook prose but optional `request_id_ref`
+in the result schema. Abstract identifiers avoid choosing between these
+representations; the mismatch remains unresolved for later implementation
+work. No maintainer interpretation of consumable decisions is assumed.
+
+**Fixture evidence-lifecycle limitation, explicitly not modeled**: Phase
+4F-v2's own runtime report also records that the dogfood fixture's own
+post-run validation reported `Incomplete wire exchange`, because it read
+external Guardian evidence before an independently, deliberately delayed
+Guardian response had finished writing. This is a harness/evidence-capture
+timing artifact of that specific experimental fixture, not an ACS
+authorization transition, and it is deliberately not represented anywhere in
+this model. The fixture itself was not modified to address it, in this
+phase or any prior one.
+
+### Stuttering
+
+`InvokeDifferentTool` can stutter under states where no invocation other
+than the approved one is available to attempt (`Invocations` has only one
+member other than the approved identity, or the guard is otherwise
+unsatisfiable), a characteristic already present in Formal-1 and unchanged
+by this refinement beyond renaming the variable its guard reads. This
+refinement does not redesign liveness or fairness; no fairness or liveness
+machinery was added. This remains a safety-only model.
+
+## Properties
+
+| Property | Classification | Basis |
+| --- | --- | --- |
+| `TypeOK` | Model structural invariant | Type discipline for the abstraction's own variables. |
+| `DenyPreventsInvocation` | Normative | Instrument §6.4. |
+| `InvocationMatchesApprovedInvocation` | Derived | Scoped to genuine ALLOW; vacuous under PROCEED, matching P3's unresolved status. |
+| `AtMostOneExecutionPerDecision` | Experimental | Not an identified ACS normative requirement. |
+| `EffectiveDecisionStable` | Implementation-derived / experimentally supported | Phase 4E source analysis plus Phase 4F-v2's one controlled runtime trial. Not an identified ACS normative requirement; no normative text was consulted to establish it as one. |
+| `NoExecutedUnknown` | Diagnostic | Reachability witness only, not a safety property. |
+| `NoLateDenyAfterProceedSettlement` | Diagnostic | Reachability witness only, establishing `EffectiveDecisionStable`'s non-vacuity in the safe configuration. |
 
 ## TLC verification
 
-Runs completed on 2026-09-15 using:
+Runs completed on 2026-09-16 using the same toolchain as Formal-1:
 
 - TLC2 **2.19**, 08 August 2024, revision **5a47802**, from
-  `/home/ange/tla/tla2tools.jar`; this distribution also parsed and semantically
-  checked the TLA+ module.
+  `/home/ange/tla/tla2tools.jar` (SHA-256
+  `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88`); this
+  distribution also parsed and semantically checked the refined TLA+ module.
 - Java **Ubuntu 17.0.20**, x86_64, as reported by TLC; one worker.
 - Linux **6.6.87.2-microsoft-standard-WSL2**, amd64.
 - Breadth-first exploration; no symmetry reduction or state constraint.
 
 All commands below ran from `/home/ange/agent-control-standard/formal`.
-Generated TLC state data and the diagnostic configuration were kept in `/tmp`.
-Initial sandboxed attempts parsed successfully but failed before exploration
-because Java RMI could not open its listener (`SocketException: Operation not
-permitted`). The same TLC commands completed with the required execution
-permission. Counts below come from those completed runs, not the failed starts.
+Generated TLC state data and diagnostic configurations were kept in `/tmp`.
 
 ### Safe configuration
 
 ```sh
-java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-phase2-safe -config ACSAuthorizationExecution.cfg ACSAuthorizationExecution.tla
+java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-safe -config ACSAuthorizationExecution.cfg ACSAuthorizationExecution.tla
 ```
 
-`PermitSecondExecution = FALSE`; `Invocations = {I, J}`.
+`PermitSecondExecution = FALSE`; `PermitLateDecisionReplacement = FALSE`;
+`Invocations = {I, J}`.
 
 ```text
 Model checking completed. No error has been found.
-19 states generated, 13 distinct states found, 0 states left on queue.
-The depth of the complete state graph search is 5.
+67 states generated, 37 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 6.
 ```
 
 All configured invariants passed: `TypeOK`, `DenyPreventsInvocation`,
-`InvocationMatchesApprovedInvocation`, and `AtMostOneExecutionPerDecision`.
-TLC exited with status 0. This is a finite model result, not an ACS conformance
-assessment or an implementation verification.
+`InvocationMatchesApprovedInvocation`, `AtMostOneExecutionPerDecision`, and
+`EffectiveDecisionStable`. TLC exited with status 0. This is a finite model
+result, not an ACS conformance assessment or an implementation
+verification. The larger state count relative to Formal-1 (67 vs. 19
+generated, 37 vs. 13 distinct, depth 6 vs. 5) reflects the added `Timeout`,
+`ReceiveGuardianAllow`, and `ReceiveGuardianDeny` branching, including the
+timely-ALLOW, timely-DENY, timeout-PROCEED, and late-decision-observed
+paths all being reachable within the same bounded, single-cycle abstraction.
 
-### Deliberately unsafe configuration
+### P4 unsafe configuration (preserved)
 
 ```sh
-java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-phase2-unsafe -config ACSAuthorizationExecution-unsafe.cfg ACSAuthorizationExecution.tla
+java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-p4-unsafe -config ACSAuthorizationExecution-unsafe.cfg ACSAuthorizationExecution.tla
 ```
 
-`PermitSecondExecution = TRUE`; otherwise the same configured invariants and
-invocation domain.
+`PermitSecondExecution = TRUE`; `PermitLateDecisionReplacement = FALSE`;
+otherwise the same configured invariants and invocation domain.
 
 ```text
 Error: Invariant AtMostOneExecutionPerDecision is violated.
-14 states generated, 12 distinct states found, 3 states left on queue.
+26 states generated, 22 distinct states found, 9 states left on queue.
 The depth of the complete state graph search is 5.
 ```
 
-The following table transcribes every variable in TLC's counterexample. `NONE`,
-`ALLOW`, and `UNKNOWN` denote the corresponding string values; `I` is a model value.
+```text
+State 1: Init
+State 2: SubmitRequest(I)
+State 3: Timeout                      (effectiveDecision -> PROCEED)
+State 4: InvokeMatchingTool           (executionCount -> 1)
+State 5: AttemptSecondExecution       (executionCount -> 2)
+```
 
-| State/action | request | decision | approvedInvocation | actualInvocation | executionCount | decisionUsed | effect |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 1: Init | NONE | NONE | NONE | NONE | 0 | FALSE | NONE |
-| 2: SubmitRequest(I) | I | NONE | NONE | NONE | 0 | FALSE | NONE |
-| 3: EvaluateAllow | I | ALLOW | I | NONE | 0 | FALSE | NONE |
-| 4: InvokeMatchingTool | I | ALLOW | I | I | 1 | TRUE | UNKNOWN |
-| 5: AttemptSecondExecution | I | ALLOW | I | I | 2 | TRUE | UNKNOWN |
+This reproduces the Formal-1 counterexample's property violation
+(`AtMostOneExecutionPerDecision` fails at `executionCount = 2`), but through
+a different witness trace than Formal-1's own recorded one (which went
+`SubmitRequest -> EvaluateAllow -> InvokeMatchingTool ->
+AttemptSecondExecution`). This is an expected, disclosed consequence of
+adding `Timeout` as a new, equally-shallow path to an effective permit:
+breadth-first search reports the first violation it reaches, and the
+`Timeout`-based trace is exactly as short as the original ALLOW-based one.
+The original ALLOW-based trace remains reachable in this same configuration
+(`ReceiveGuardianAllow` is unconditionally enabled at the same point
+`Timeout` is); TLC simply did not report it as this run's particular
+witness. The configuration, its constants, and its invariant list are
+otherwise unchanged from Formal-1. TLC exited with status 0 for the
+reported error path (see raw output for the tool's own exit convention);
+this counterexample concerns the deliberately unsafe formal model only. It
+is not evidence of an ACS or AGT vulnerability, and it is not a claim that
+the real implementation permits a second execution.
 
-There is one evaluation and two execution occurrences. The experimental invariant
-fails at state 5; TLC exited with status 12. TLC reported no violation of the other configured invariants
-before stopping, but this run did not exhaust the unsafe state space; those
-invariants are not reported as exhaustively verified for that configuration.
-This counterexample concerns the deliberately unsafe formal model only. It is
-not evidence of an ACS or AGT vulnerability.
-
-### UNKNOWN reachability
-
-`NoExecutedUnknown` is a diagnostic predicate, intentionally absent from both
-committed configurations. Checking the negation of the desired reachable state
-as a temporary invariant makes TLC return a witness. Its expected violation is
-not a failure of an intended safety property.
+### Late-decision-replacement unsafe configuration (new)
 
 ```sh
-cp ACSAuthorizationExecution.cfg /tmp/acs-phase2-unknown.cfg
-printf '\nINVARIANT NoExecutedUnknown\n' >> /tmp/acs-phase2-unknown.cfg
-java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-phase2-unknown -config /tmp/acs-phase2-unknown.cfg ACSAuthorizationExecution.tla
+java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-late-unsafe -config ACSAuthorizationExecution-late-unsafe.cfg ACSAuthorizationExecution.tla
+```
+
+`PermitSecondExecution = FALSE`; `PermitLateDecisionReplacement = TRUE`;
+otherwise the same configured invariants and invocation domain. This
+configuration is kept separate from the P4 unsafe configuration
+deliberately, so the two counterexamples (execution cardinality failure and
+effective-decision replacement failure) remain independently legible,
+per this project's own established practice of not making one unsafe
+configuration serve two unrelated counterexamples.
+
+```text
+Error: Invariant EffectiveDecisionStable is violated.
+11 states generated, 11 distinct states found, 6 states left on queue.
+The depth of the complete state graph search is 4.
+```
+
+```text
+State 1: Init
+State 2: SubmitRequest(I)
+State 3: Timeout               (effectiveDecision -> PROCEED, frozen at settlement)
+State 4: ReceiveGuardianDeny   (guardianDecision -> DENY; PermitLateDecisionReplacement
+                                 allows effectiveDecision -> DENY too, diverging from
+                                 the frozen settlement value "PROCEED")
+```
+
+This is exactly the conceptual trace this phase was designed to demonstrate:
+`request -> timeout -> effective PROCEED -> late DENY -> effective
+incorrectly changes to DENY`. This is a deliberately unsafe model transition
+used to show `EffectiveDecisionStable` is a meaningful, non-vacuous
+property, not evidence that this transition exists in the real ACS
+implementation. Phase 4E and Phase 4F-v2 both found the opposite: no code
+path re-reads a settled decision, and the one tested runtime trial showed
+the late DENY did not become effective.
+
+### UNKNOWN reachability (preserved)
+
+```sh
+cp ACSAuthorizationExecution.cfg /tmp/acs-formal2-unknown.cfg
+printf '\nINVARIANT NoExecutedUnknown\n' >> /tmp/acs-formal2-unknown.cfg
+java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-unknown-run -config /tmp/acs-formal2-unknown.cfg ACSAuthorizationExecution.tla
 ```
 
 ```text
 Error: Invariant NoExecutedUnknown is violated.
-9 states generated, 8 distinct states found, 3 states left on queue.
+12 states generated, 12 distinct states found, 7 states left on queue.
 The depth of the complete state graph search is 4.
 ```
 
-TLC exited with status 12, the expected diagnostic violation.
-The witness is states 1–4 of the table above, under the safe configuration.
-State 4 satisfies `executionCount > 0 /\ effect = "UNKNOWN"`. Thus an execution
-occurrence does not logically imply observed success in this model. This
-reachability check stops at its witness and is separate from the completed safe
-invariant check.
+TLC exited with the expected diagnostic violation. The witness reaches
+`InvokeMatchingTool` via `Timeout` this time (rather than
+`ReceiveGuardianAllow`, as in Formal-1's own recorded witness), for the same
+breadth-first-search reason noted for the P4 unsafe configuration above.
+`executionCount > 0 /\ effect = "UNKNOWN"` is satisfied either way. An
+execution occurrence still does not logically imply observed success in
+this model.
+
+### Late-decision reachability (new)
+
+```sh
+cp ACSAuthorizationExecution.cfg /tmp/acs-formal2-latewitness.cfg
+printf '\nINVARIANT NoLateDenyAfterProceedSettlement\n' >> /tmp/acs-formal2-latewitness.cfg
+java -cp /home/ange/tla/tla2tools.jar tlc2.TLC -workers 1 -metadir /tmp/acs-formal2-latewitness-run -config /tmp/acs-formal2-latewitness.cfg ACSAuthorizationExecution.tla
+```
+
+```text
+Error: Invariant NoLateDenyAfterProceedSettlement is violated.
+11 states generated, 11 distinct states found, 6 states left on queue.
+The depth of the complete state graph search is 4.
+```
+
+```text
+State 4: effectiveDecision = "PROCEED", guardianDecision = "DENY"
+```
+
+TLC exited with the expected diagnostic violation. This witness establishes
+that the safe configuration can actually reach a state where the effective
+decision has already settled to PROCEED via timeout while a late Guardian
+DENY is simultaneously on record for the same request, and that
+`effectiveDecision` correctly remains `"PROCEED"` there (unlike the
+late-unsafe configuration's own counterexample). This is the non-vacuity
+demonstration `EffectiveDecisionStable`'s safe-configuration pass depends
+on: the property is not merely true because its interesting precondition is
+unreachable.
+
+## Runtime trace correspondence (abstraction only)
+
+This table maps Phase 4F-v2's own runtime observation onto the refined safe
+model's actions and states. It is an abstraction correspondence, not a claim
+of one-to-one implementation equivalence; the model has no notion of
+milliseconds, HTTP, JSON-RPC, processes, or the specific `bash` tool.
+
+| Runtime observation (Phase 4F-v2) | Formal-2 transition/state |
+| --- | --- |
+| `steps/toolCallRequest` emitted for the targeted invocation | `SubmitRequest(i)` |
+| Client-side decision wait, no response yet | `effectiveDecision = "NONE"`, `guardianDecision = "NONE"` |
+| Client timeout at ~5.007s (`audit.jsonl` `failure.kind: "timeout"`) | `Timeout` |
+| Failure posture resolves to PROCEED (`posture: "proceed"`, `outcome: "proceeded"`) | `effectiveDecision' = "PROCEED"`, frozen into `effectiveDecisionAtSettlement` |
+| Dispatch released, tool runs | `InvokeMatchingTool` |
+| `allowed.txt` effect observed | `effect' = "UNKNOWN"` (this model does not itself distinguish `SUCCESS`; `ObserveSuccess` would be the next step if modeled at that granularity) |
+| Guardian's delayed response, `decision=deny`, same `rpc_id`, sent after settlement | `ReceiveGuardianDeny` with `PermitLateDecisionReplacement = FALSE` (the safe configuration) |
+| DENY did not become effective for the already-settled invocation | `effectiveDecision` remains `"PROCEED"`; `guardianDecision = "DENY"` is recorded separately |
+
+## Limitations
+
+This remains a bounded, single-request-lifecycle abstraction, extended but
+not fundamentally restructured. It does not model concurrency, multiple
+simultaneous requests, retries, a configurable DENY failure posture,
+session/handshake negotiation, or the fixture-level evidence-lifecycle
+artifact Phase 4F-v2 separately observed (see Exclusions, above). The P4
+unsafe configuration's own witness trace changed (though not its
+conclusion) as a side effect of adding `Timeout` as an equally-shallow
+alternative path to an effective permit; this is disclosed rather than
+silently accepted. No liveness or fairness property is checked. TLC's
+breadth-first exploration in this small, finite abstraction does not
+generalize to a claim about the real system's behavior under load, timing
+variation, or repeated requests.
+
+## P3 status
+
+`P3 = UNMEASURED / UNRESOLVED`, unchanged by this refinement.
+`InvocationMatchesApprovedInvocation` remains scoped to genuine ALLOW and is
+vacuously satisfied under PROCEED, which is the correct reflection of P3's
+own status: this model does not claim, and this refinement does not
+introduce any claim, that an executed invocation under fallback PROCEED
+matches anything that was actually approved, because nothing was approved
+on that path.
+
+## P4 status
+
+`P4 = EXPERIMENTAL`, unchanged by this refinement.
+`AtMostOneExecutionPerDecision` is still demonstrably violated in a
+deliberately unsafe configuration, with `PermitSecondExecution` gating the
+same experimental bypass Formal-1 defined. This is not converted into a
+normative ACS requirement by this refinement, and the ability to reason
+about execution cardinality is preserved (see the P4 unsafe configuration's
+own results above).
