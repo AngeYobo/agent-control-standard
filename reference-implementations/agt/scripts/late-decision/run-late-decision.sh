@@ -124,6 +124,21 @@ print("\n-- host tool outcomes")
 for t in tools: print(f"  {t['state']['status']:<10} {t['state']['input'].get('command')}")
 dt = run / "denied.txt"
 print(f"\n-- effect marker denied.txt: {'PRESENT: ' + dt.read_text().strip() if dt.exists() else 'absent'}")
+import datetime as _dt
+def _ts(x):
+    x = x.strip().replace("Z", "")
+    head, _, frac = x.partition(".")
+    return _dt.datetime.fromisoformat(head + "." + (frac + "000000")[:6]).replace(tzinfo=_dt.timezone.utc)
+stamps = {n: (run / n).read_text().strip() for n in ("dispatched.txt", "finished.txt") if (run / n).exists()}
+print("\n-- command self-timestamps (host clock, UTC)")
+for n, v in stamps.items(): print(f"  {n:<15} {v}")
+fallback = next((r["recorded_at"] for r in audit if r.get("rpc_id") == rid), None)
+deny = next((r["recorded_at"] for r in guard if r.get("rpc_id") == rid and r["direction"] == "response"), None)
+if "dispatched.txt" in stamps and fallback and deny:
+    d = _ts(stamps["dispatched.txt"])
+    print(f"  dispatch - host fallback   : {(d - _ts(fallback)).total_seconds()*1000:+.3f} ms")
+    if "finished.txt" in stamps: print(f"  finished - dispatch        : {(_ts(stamps['finished.txt']) - d).total_seconds()*1000:+.3f} ms")
+    print(f"  guardian deny - dispatch   : {(_ts(deny) - d).total_seconds()*1000:+.3f} ms")
 print("\n-- fixture said:")
 print("  " + (e/"fixture.out").read_text().strip().splitlines()[-1] if (e/"fixture.out").exists() and (e/"fixture.out").read_text().strip() else "  (nothing)")
 PY

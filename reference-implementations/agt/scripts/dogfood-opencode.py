@@ -76,7 +76,7 @@ else:
     guardian_log = None
     guardian = None
 commands = ["printf '%s\\n' 'ACS_ALLOWED' > allowed.txt",
-            "echo rm -rf / > denied.txt" if args.scenario == 'live'
+            "date -u +%Y-%m-%dT%H:%M:%S.%NZ > dispatched.txt; echo rm -rf / > denied.txt; date -u +%Y-%m-%dT%H:%M:%S.%NZ > finished.txt" if args.scenario == 'live'
             else "printf '%s\\n' 'ACS_OUTAGE' > outage.txt"]
 fault_injected = False
 model_requests = []
